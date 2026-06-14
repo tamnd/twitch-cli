@@ -1,125 +1,72 @@
-// Package cli builds the twitch command tree on top of the twitch library.
+// Package cli assembles the twitch command tree from the twitch domain on top of
+// the any-cli/kit framework. Every read command is declared once as a kit
+// operation in the twitch package, so the CLI, the HTTP API (twitch serve), and
+// the MCP server (twitch mcp) all derive from one registry.
 package cli
 
 import (
-	"fmt"
-	"os"
-
-	"github.com/mattn/go-isatty"
-	"github.com/spf13/cobra"
+	"github.com/tamnd/any-cli/kit"
 	"github.com/tamnd/twitch-cli/twitch"
 )
 
+// Build metadata, set via -ldflags at release time.
 var (
 	Version = "dev"
 	Commit  = "none"
 	Date    = "unknown"
 )
 
-const (
-	exitError  = 1
-	exitUsage  = 2
-	exitNoData = 3
-)
-
-type ExitError struct {
-	Code int
-	Err  error
+// builder holds the domain-global flags while the app is assembled, then folds
+// them onto the resolved config in finalize.
+type builder struct {
+	clientID  string
+	userAgent string
+	cacheTTL  string
+	refresh   bool
 }
 
-func (e *ExitError) Error() string {
-	if e.Err != nil {
-		return e.Err.Error()
-	}
-	return fmt.Sprintf("exit %d", e.Code)
+// NewApp assembles the kit App: the twitch domain installs the client factory
+// and the operations, this package adds the global flags and the version
+// command, and kit provides the CLI, API, and MCP surfaces.
+//
+// To add a command, declare it in twitch/domain.go with kit.Handle and it
+// appears here automatically. Reach for app.AddCommand only for a verb that does
+// not fit the emit-records shape, the way version does below.
+func NewApp() *kit.App {
+	b := &builder{}
+	id := twitch.Identity()
+	id.Version = Version
+
+	app := kit.New(id, kit.WithDefaults(twitch.Defaults))
+	app.GlobalFlags(b.globals)
+	app.Finalize(b.finalize)
+
+	twitch.Domain{}.Register(app)
+	app.AddCommand(newVersionCmd())
+	return app
 }
 
-func (e *ExitError) Unwrap() error { return e.Err }
-
-func codeError(code int, err error) error { return &ExitError{Code: code, Err: err} }
-
-type App struct {
-	client   *twitch.Client
-	cfg      twitch.Config
-	output   string
-	fields   []string
-	noHeader bool
-	template string
-	limit    int
+func (b *builder) globals(f *kit.FlagSet) {
+	f.StringVar(&b.clientID, "client-id", "", "override the public Twitch client id")
+	f.StringVar(&b.userAgent, "user-agent", twitch.DefaultUserAgent, "User-Agent sent with each request")
+	f.StringVar(&b.cacheTTL, "cache-ttl", twitch.DefaultCacheTTL.String(), "how long a cached response stays fresh")
+	f.BoolVar(&b.refresh, "refresh", false, "fetch fresh copies and rewrite the cache, ignoring any hit")
 }
 
-func Root() *cobra.Command {
-	app := &App{cfg: twitch.DefaultConfig()}
-
-	root := &cobra.Command{
-		Use:           "twitch",
-		Short:         "Browse live streams, categories, and channels on Twitch",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
-			return app.setup()
-		},
+func (b *builder) finalize(c *kit.Config) {
+	if c.Extra == nil {
+		c.Extra = map[string]string{}
 	}
-
-	pf := root.PersistentFlags()
-	pf.StringVarP(&app.output, "output", "o", "auto", "output: table|json|jsonl|csv|tsv|url|raw")
-	pf.StringSliceVar(&app.fields, "fields", nil, "comma-separated columns to include")
-	pf.BoolVar(&app.noHeader, "no-header", false, "omit header row in table/csv/tsv")
-	pf.StringVar(&app.template, "template", "", "Go text/template per record")
-	pf.IntVarP(&app.limit, "limit", "n", 20, "limit number of records")
-	pf.DurationVar(&app.cfg.Rate, "delay", app.cfg.Rate, "minimum spacing between requests")
-	pf.DurationVar(&app.cfg.Timeout, "timeout", app.cfg.Timeout, "per-request timeout")
-	pf.IntVar(&app.cfg.Retries, "retries", app.cfg.Retries, "retry attempts on 429/5xx")
-
-	root.AddCommand(
-		app.streamsCmd(),
-		app.categoriesCmd(),
-		app.searchCmd(),
-		newVersionCmd(),
-	)
-	return root
-}
-
-func (a *App) setup() error {
-	if a.output == "" || a.output == "auto" {
-		if isatty.IsTerminal(os.Stdout.Fd()) {
-			a.output = string(FormatTable)
-		} else {
-			a.output = string(FormatJSONL)
-		}
+	if b.clientID != "" {
+		c.Extra["client-id"] = b.clientID
 	}
-	if !Format(a.output).Valid() {
-		return codeError(exitUsage, fmt.Errorf("unknown output format %q", a.output))
+	if b.userAgent != "" {
+		c.Extra["user-agent"] = b.userAgent
 	}
-	a.client = twitch.NewClient(a.cfg)
-	return nil
-}
-
-func (a *App) render(records any) error {
-	r := NewRenderer(os.Stdout, Format(a.output), a.fields, a.noHeader, a.template)
-	return r.Render(records)
-}
-
-func (a *App) renderOrEmpty(records any, n int) error {
-	if err := a.render(records); err != nil {
-		return err
+	if b.cacheTTL != "" {
+		c.Extra["cache-ttl"] = b.cacheTTL
 	}
-	if n == 0 {
-		return codeError(exitNoData, nil)
+	if b.refresh {
+		c.Extra["refresh"] = "true"
 	}
-	return nil
-}
-
-func mapFetchErr(err error) error {
-	if err == nil {
-		return nil
-	}
-	return codeError(exitError, err)
-}
-
-func (a *App) effectiveLimit(def int) int {
-	if a.limit > 0 {
-		return a.limit
-	}
-	return def
 }
