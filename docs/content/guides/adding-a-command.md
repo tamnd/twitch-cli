@@ -34,8 +34,9 @@ type Clip struct {
 - `kit:"link,kind=<scheme>/<type>"` on an edge field lets a host walk from one
   record to another, across tools when the link points at another site.
 
-The client methods that fill these records live alongside the GraphQL client;
-the mapping from Twitch's wire JSON to a record happens in `parse.go`.
+The client methods that fill these records live next to the queries they serve,
+one file per surface; the mapping from Twitch's wire JSON to a record happens in
+that same file, for example `toClip` in `clips.go`.
 
 ## 2. Declare the operation
 
@@ -58,8 +59,8 @@ func getClip(ctx context.Context, in clipRef, emit func(*Clip) error) error {
 
 // inside Register(app):
 kit.Handle(app, kit.OpMeta{Name: "clip", Group: "read", Single: true,
-    Summary: "Show one clip by slug or URL", URIType: "clip", Resolver: true,
-    Args: []kit.Arg{{Name: "slug", Help: "clip slug or URL"}}}, getClip)
+    Summary: "Show one clip by slug", URIType: "clip", Resolver: true,
+    Args: []kit.Arg{{Name: "slug", Help: "clip slug or clips.twitch.tv URL"}}}, getClip)
 ```
 
 That is the whole change. `kit.Handle` reflects the input for flags and the

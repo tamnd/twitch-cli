@@ -178,7 +178,7 @@ twitch games -n 6 --fields name,slug,viewers -o table
 ╰────────────────────┴────────────────────┴─────────╯
 ```
 
-Pick the format with `-o table|json|jsonl|csv|tsv|url|raw`, choose columns with
+Pick the format with `-o table|markdown|json|jsonl|csv|tsv|url|raw`, choose columns with
 `--fields a,b,c`, render a custom line with `--template`, drop the header with
 `--no-header`, and cap results with `-n/--limit`. The `url` format prints just
 the canonical URL of each record, which is handy for piping into another tool.

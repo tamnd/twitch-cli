@@ -4,13 +4,13 @@ description: "What twitch is and how it is put together."
 weight: 10
 ---
 
-`twitch` crawls public Twitch streams, channels, games, videos, and clips into
+`twitch` reads public Twitch streams, channels, games, videos, and clips into
 structured records.
 
 It is a single binary. It reads Twitch the way a logged-out browser does,
 shapes the responses into clean records, and gets out of your way. There is no
 API key, nothing to sign up for, and nothing to run alongside it. `twitch` is an
-independent tool and is not affiliated with Twitch Interactive.
+independent tool and is not affiliated with Twitch.
 
 ## How it is built
 
