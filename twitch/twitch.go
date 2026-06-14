@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -145,7 +146,9 @@ func (c *Client) do(ctx context.Context, body []byte) (raw []byte, retry bool, e
 		return nil, true, err
 	}
 	if err := checkGQLErrors(b); err != nil {
-		return nil, false, err
+		// An integrity check is mapped to ErrRateLimited and is worth another
+		// attempt; a missing entity or a hard error is not.
+		return nil, errors.Is(err, ErrRateLimited), err
 	}
 	return b, false, nil
 }
@@ -167,6 +170,12 @@ func checkGQLErrors(b []byte) error {
 	if isNotFoundMessage(msg) {
 		return ErrNotFound
 	}
+	if isIntegrityMessage(msg) {
+		// Twitch occasionally answers a logged-out request with an integrity
+		// check. It is a transient throttle, so map it to ErrRateLimited: the
+		// caller retries it, and if it persists the exit code points at pacing.
+		return ErrRateLimited
+	}
 	return fmt.Errorf("gql: %s", msg)
 }
 
@@ -175,6 +184,12 @@ func isNotFoundMessage(msg string) bool {
 	return strings.Contains(m, "not found") ||
 		strings.Contains(m, "does not exist") ||
 		strings.Contains(m, "no such")
+}
+
+func isIntegrityMessage(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "integrity") ||
+		strings.Contains(m, "failed integrity check")
 }
 
 // decodeData unmarshals the data payload of an envelope into out.

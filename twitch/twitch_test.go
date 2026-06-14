@@ -275,6 +275,40 @@ func TestBlocked(t *testing.T) {
 	}
 }
 
+func TestIntegrityCheckRetries(t *testing.T) {
+	// The first reply is a transient integrity check; the retry succeeds.
+	integrity := `{"errors":[{"message":"failed integrity check"}]}`
+	ok := gqlData(map[string]any{"games": map[string]any{
+		"edges":    []map[string]any{{"cursor": "c1", "node": map[string]any{"id": "1", "name": "Just Chatting", "slug": "just-chatting"}}},
+		"pageInfo": map[string]any{"hasNextPage": false},
+	}})
+	ts := fakeServer(t, integrity, ok)
+	defer ts.Close()
+
+	c := newClient(ts)
+	c.Retries = 1
+	got, err := c.Directory(context.Background(), 5)
+	if err != nil {
+		t.Fatalf("integrity check should be retried, got %v", err)
+	}
+	if len(got) != 1 || got[0].Slug != "just-chatting" {
+		t.Fatalf("unexpected directory after retry: %+v", got)
+	}
+}
+
+func TestIntegrityCheckPersists(t *testing.T) {
+	integrity := `{"errors":[{"message":"failed integrity check"}]}`
+	ts := fakeServer(t, integrity)
+	defer ts.Close()
+
+	c := newClient(ts)
+	c.Retries = 1
+	_, err := c.Directory(context.Background(), 5)
+	if !errors.Is(err, twitch.ErrRateLimited) {
+		t.Fatalf("a persistent integrity check should read as rate limited, got %v", err)
+	}
+}
+
 func TestGQLErrorNotFound(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"errors":[{"message":"video does not exist"}]}`))
