@@ -1,4 +1,14 @@
-// Package twitch fetches live streams, categories, and channels from Twitch via the public GQL API.
+// Package twitch is the library behind the twitch command line: an HTTP client
+// for the public Twitch GraphQL API and the typed records every command emits.
+//
+// Twitch's web app talks to one backend, a GraphQL endpoint at
+// https://gql.twitch.tv/gql. It serves a logged-out reader with nothing but a
+// public client id (kimne78kx3ncx6brgo4mv6wki5h1ko) and a browser user-agent,
+// and it accepts full query strings rather than only persisted hashes. So this
+// client POSTs JSON and decodes JSON: no cookie jar, no csrf handshake, no HTML
+// parsing. Each surface (streams, channels, games, videos, clips, search) lives
+// in its own file with its query builder and record mapping; this file holds the
+// shared client.
 package twitch
 
 import (
@@ -8,216 +18,76 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 )
 
-const (
-	DefaultUserAgent = "Mozilla/5.0 (compatible; twitch-cli/dev; +https://github.com/tamnd/twitch-cli)"
-	gqlEndpoint      = "https://gql.twitch.tv/gql"
-	// Public client ID extracted from the Twitch web client.
-	defaultClientID = "kimne78kx3ncx6brgo4mv6wki5h1ko"
-)
-
-// Config holds all tuneable client parameters.
-type Config struct {
-	BaseURL   string
-	ClientID  string
-	Rate      time.Duration
-	Timeout   time.Duration
-	Retries   int
-	UserAgent string
-}
-
-// DefaultConfig returns sensible defaults for the Twitch GQL API.
-func DefaultConfig() Config {
-	return Config{
-		BaseURL:   gqlEndpoint,
-		ClientID:  defaultClientID,
-		Rate:      200 * time.Millisecond,
-		Timeout:   30 * time.Second,
-		Retries:   3,
-		UserAgent: DefaultUserAgent,
-	}
-}
-
-// Client talks to the Twitch GQL API.
+// Client talks to the Twitch GraphQL endpoint. It paces requests, retries the
+// transient failures, and caches response bodies on disk keyed by the query.
 type Client struct {
-	cfg  Config
-	http *http.Client
+	HTTP      *http.Client
+	Endpoint  string
+	UserAgent string
+	ClientID  string
+	Delay     time.Duration
+	Retries   int
+
+	cache   *cache
+	refresh bool
+
+	mu   sync.Mutex
 	last time.Time
 }
 
-// NewClient returns a Client with the given configuration.
+// NewClient builds a client from cfg.
 func NewClient(cfg Config) *Client {
-	return &Client{
-		cfg:  cfg,
-		http: &http.Client{Timeout: cfg.Timeout},
+	c := &Client{
+		HTTP:      &http.Client{Timeout: cfg.Timeout},
+		Endpoint:  cfg.BaseURL,
+		UserAgent: cfg.UserAgent,
+		ClientID:  cfg.ClientID,
+		Delay:     cfg.Delay,
+		Retries:   cfg.Retries,
+		refresh:   cfg.Refresh,
 	}
+	if c.Endpoint == "" {
+		c.Endpoint = gqlEndpoint
+	}
+	if c.UserAgent == "" {
+		c.UserAgent = DefaultUserAgent
+	}
+	if c.ClientID == "" {
+		c.ClientID = defaultClientID
+	}
+	// --refresh keeps the cache (so it is rewritten) but skips reads. --no-cache
+	// drops it entirely.
+	if !cfg.NoCache {
+		c.cache = newCache(cfg.CacheDir, cfg.CacheTTL)
+	}
+	return c
 }
 
-// Streams returns the top live streams, optionally filtered by game name.
-func (c *Client) Streams(ctx context.Context, game string, limit int) ([]Stream, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-
-	var query string
-	if game != "" {
-		query = fmt.Sprintf(`{ game(name: %q) { streams(first: %d) { edges { cursor node { id title viewersCount createdAt broadcaster { login displayName } } } } } }`, game, limit)
-	} else {
-		query = fmt.Sprintf(`{ streams(first: %d) { edges { cursor node { id title viewersCount createdAt game { name } broadcaster { login displayName } } } } }`, limit)
-	}
-
-	var resp struct {
-		Data struct {
-			Streams *struct {
-				Edges []struct {
-					Node streamNode `json:"node"`
-				} `json:"edges"`
-			} `json:"streams"`
-			Game *struct {
-				Streams struct {
-					Edges []struct {
-						Node streamNode `json:"node"`
-					} `json:"edges"`
-				} `json:"streams"`
-			} `json:"game"`
-		} `json:"data"`
-	}
-
-	if err := c.gql(ctx, query, &resp); err != nil {
-		return nil, err
-	}
-
-	var edges []struct {
-		Node streamNode `json:"node"`
-	}
-	if game != "" && resp.Data.Game != nil {
-		edges = resp.Data.Game.Streams.Edges
-	} else if resp.Data.Streams != nil {
-		edges = resp.Data.Streams.Edges
-	}
-
-	out := make([]Stream, 0, len(edges))
-	for i, e := range edges {
-		gameName := e.Node.GameName
-		if e.Node.Game != nil {
-			gameName = e.Node.Game.Name
-		}
-		out = append(out, Stream{
-			Rank:      i + 1,
-			ID:        e.Node.ID,
-			Title:     e.Node.Title,
-			Game:      gameName,
-			Channel:   e.Node.Broadcaster.Login,
-			Viewers:   e.Node.ViewersCount,
-			StartedAt: e.Node.CreatedAt,
-			URL:       "https://www.twitch.tv/" + e.Node.Broadcaster.Login,
-		})
-	}
-	return out, nil
+// gqlError is one entry in a GraphQL envelope's errors array.
+type gqlError struct {
+	Message string `json:"message"`
 }
 
-// Categories returns the top categories/games by viewer count.
-func (c *Client) Categories(ctx context.Context, limit int) ([]Category, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-
-	query := fmt.Sprintf(`{ games(first: %d) { edges { node { id name slug viewersCount } } } }`, limit)
-
-	var resp struct {
-		Data struct {
-			Games struct {
-				Edges []struct {
-					Node struct {
-						ID           string `json:"id"`
-						Name         string `json:"name"`
-						Slug         string `json:"slug"`
-						ViewersCount int    `json:"viewersCount"`
-					} `json:"node"`
-				} `json:"edges"`
-			} `json:"games"`
-		} `json:"data"`
-	}
-
-	if err := c.gql(ctx, query, &resp); err != nil {
-		return nil, err
-	}
-
-	out := make([]Category, 0, len(resp.Data.Games.Edges))
-	for i, e := range resp.Data.Games.Edges {
-		out = append(out, Category{
-			Rank:    i + 1,
-			ID:      e.Node.ID,
-			Name:    e.Node.Name,
-			Slug:    e.Node.Slug,
-			Viewers: e.Node.ViewersCount,
-			URL:     "https://www.twitch.tv/directory/game/" + e.Node.Slug,
-		})
-	}
-	return out, nil
-}
-
-// Search searches for channels and games matching the query.
-func (c *Client) SearchChannels(ctx context.Context, query string) ([]Channel, error) {
-	gqlQuery := fmt.Sprintf(`{ searchFor(userQuery: %q, platform: "web") { channels { items { id login displayName } } } }`, query)
-
-	var resp struct {
-		Data struct {
-			SearchFor struct {
-				Channels struct {
-					Items []struct {
-						ID          string `json:"id"`
-						Login       string `json:"login"`
-						DisplayName string `json:"displayName"`
-					} `json:"items"`
-				} `json:"channels"`
-			} `json:"searchFor"`
-		} `json:"data"`
-	}
-
-	if err := c.gql(ctx, gqlQuery, &resp); err != nil {
-		return nil, err
-	}
-
-	items := resp.Data.SearchFor.Channels.Items
-	out := make([]Channel, 0, len(items))
-	for i, item := range items {
-		out = append(out, Channel{
-			Rank:        i + 1,
-			ID:          item.ID,
-			Login:       item.Login,
-			DisplayName: item.DisplayName,
-			URL:         "https://www.twitch.tv/" + item.Login,
-		})
-	}
-	return out, nil
-}
-
-type streamNode struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	GameName string `json:"gameName"`
-	Game     *struct {
-		Name string `json:"name"`
-	} `json:"game"`
-	ViewersCount int    `json:"viewersCount"`
-	CreatedAt    string `json:"createdAt"`
-	Broadcaster  struct {
-		Login       string `json:"login"`
-		DisplayName string `json:"displayName"`
-	} `json:"broadcaster"`
-}
-
+// gql runs one query: paced, retried, cached. out receives the decoded data
+// payload (the method passes a pointer to a struct shaped like the query).
 func (c *Client) gql(ctx context.Context, query string, out any) error {
+	if !c.refresh {
+		if b, ok := c.cache.get(query); ok {
+			return decodeData(b, out)
+		}
+	}
 	body, err := json.Marshal(map[string]string{"query": query})
 	if err != nil {
 		return err
 	}
 
 	var lastErr error
-	for attempt := 0; attempt <= c.cfg.Retries; attempt++ {
+	for attempt := 0; attempt <= c.Retries; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -225,61 +95,111 @@ func (c *Client) gql(ctx context.Context, query string, out any) error {
 			case <-time.After(backoff(attempt)):
 			}
 		}
-		err = c.do(ctx, body, out)
-		if err == nil {
-			return nil
+		raw, retry, derr := c.do(ctx, body)
+		if derr == nil {
+			c.cache.put(query, raw)
+			return decodeData(raw, out)
 		}
-		lastErr = err
+		lastErr = derr
+		if !retry {
+			return derr
+		}
 	}
-	return fmt.Errorf("gql: %w", lastErr)
+	return lastErr
 }
 
-func (c *Client) do(ctx context.Context, body []byte, out any) error {
+// do performs one POST and returns the raw response body. retry reports whether
+// the failure is worth another attempt.
+func (c *Client) do(ctx context.Context, body []byte) (raw []byte, retry bool, err error) {
 	c.pace()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.BaseURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.Endpoint, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return nil, false, err
 	}
-	req.Header.Set("User-Agent", c.cfg.UserAgent)
-	req.Header.Set("Client-Id", c.cfg.ClientID)
+	req.Header.Set("User-Agent", c.UserAgent)
+	req.Header.Set("Client-Id", c.ClientID)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
 
-	resp, err := c.http.Do(req)
+	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return nil, true, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return fmt.Errorf("http %d", resp.StatusCode)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("http %d", resp.StatusCode)
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		// fall through to read and check the body
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return nil, true, ErrRateLimited
+	case resp.StatusCode >= 500:
+		return nil, true, fmt.Errorf("http %d", resp.StatusCode)
+	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+		return nil, false, ErrBlocked
+	default:
+		return nil, false, fmt.Errorf("http %d", resp.StatusCode)
 	}
 
 	b, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, true, err
 	}
-
-	// Check for GraphQL errors
-	var gqlResp struct {
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
+	if err := checkGQLErrors(b); err != nil {
+		return nil, false, err
 	}
-	if err := json.Unmarshal(b, &gqlResp); err == nil && len(gqlResp.Errors) > 0 {
-		return fmt.Errorf("gql error: %s", gqlResp.Errors[0].Message)
-	}
-
-	return json.Unmarshal(b, out)
+	return b, false, nil
 }
 
+// checkGQLErrors reports a GraphQL-level error carried in the envelope's errors
+// array. A message that names a missing entity maps to ErrNotFound; anything
+// else is wrapped as-is.
+func checkGQLErrors(b []byte) error {
+	var env struct {
+		Errors []gqlError `json:"errors"`
+	}
+	if err := json.Unmarshal(b, &env); err != nil {
+		return nil // a real decode error surfaces in decodeData
+	}
+	if len(env.Errors) == 0 {
+		return nil
+	}
+	msg := env.Errors[0].Message
+	if isNotFoundMessage(msg) {
+		return ErrNotFound
+	}
+	return fmt.Errorf("gql: %s", msg)
+}
+
+func isNotFoundMessage(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "not found") ||
+		strings.Contains(m, "does not exist") ||
+		strings.Contains(m, "no such")
+}
+
+// decodeData unmarshals the data payload of an envelope into out.
+func decodeData(b []byte, out any) error {
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(b, &env); err != nil {
+		return err
+	}
+	if len(env.Data) == 0 {
+		return nil
+	}
+	return json.Unmarshal(env.Data, out)
+}
+
+// pace blocks until at least Delay has passed since the previous request.
 func (c *Client) pace() {
-	if c.cfg.Rate <= 0 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.Delay <= 0 {
+		c.last = time.Now()
 		return
 	}
-	if wait := c.cfg.Rate - time.Since(c.last); wait > 0 {
+	if wait := c.Delay - time.Since(c.last); wait > 0 {
 		time.Sleep(wait)
 	}
 	c.last = time.Now()
@@ -292,3 +212,6 @@ func backoff(attempt int) time.Duration {
 	}
 	return d
 }
+
+// ClearCache removes the on-disk cache.
+func (c *Client) ClearCache() error { return c.cache.clear() }
