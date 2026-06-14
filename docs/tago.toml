@@ -1,6 +1,6 @@
 title       = "twitch"
 baseURL     = "https://twitch-cli.tamnd.com/"
-description = "A command line for twitch."
+description = "Read public Twitch into structured records. One binary for top live streams, the category directory, a channel with its videos, clips, and schedule, a single video or clip, and search over channels and categories, with no API key and no login."
 contentDir  = "content"
 outputDir   = "public"
 theme       = "tago-doks"

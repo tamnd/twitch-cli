@@ -11,5 +11,9 @@ packages (deb, rpm, apk), a multi-arch container image on GHCR, and entries for
 the package managers. Binaries are pure Go, so there is nothing to install
 alongside them.
 
-No releases yet. Cut the first one with `git tag v0.1.0 && git push --tags`,
-then add a page here.
+- **initial**: the first release. Read commands for streams, the category
+  directory, channels (metadata, videos, clips, schedule), games (metadata,
+  streams, clips), individual videos and clips, and search for both channels
+  and games; the offline `ref` tools; the shared output contract with
+  `--fields`, `--template`, `--db`, and caching flags; the `serve` and `mcp`
+  surfaces; and the `twitch://` resource-URI driver.
