@@ -14,18 +14,17 @@ type streamNode struct {
 	ViewersCount int    `json:"viewersCount"`
 	CreatedAt    string `json:"createdAt"`
 	Language     string `json:"language"`
-	Type         string `json:"type"`
 	Game         *struct {
 		Name string `json:"name"`
 		Slug string `json:"slug"`
 	} `json:"game"`
 	Broadcaster *struct {
-		Login       string `json:"login"`
-		DisplayName string `json:"displayName"`
+		Login             string `json:"login"`
+		DisplayName       string `json:"displayName"`
+		BroadcastSettings *struct {
+			IsMature bool `json:"isMature"`
+		} `json:"broadcastSettings"`
 	} `json:"broadcaster"`
-	FreeformTags []struct {
-		Name string `json:"name"`
-	} `json:"freeformTags"`
 }
 
 type streamEdges struct {
@@ -54,17 +53,24 @@ func (n streamNode) toStream() *Stream {
 		s.Channel = n.Broadcaster.Login
 		s.DisplayName = n.Broadcaster.DisplayName
 		s.URL = BaseURL + "/" + n.Broadcaster.Login
+		if n.Broadcaster.BroadcastSettings != nil {
+			s.Mature = n.Broadcaster.BroadcastSettings.IsMature
+		}
 	}
 	return s
 }
+
+// streamFields is the node selection shared by both stream queries, so the top
+// list and a category's list fill the same columns.
+const streamFields = `id title viewersCount createdAt language game { name slug } broadcaster { login displayName broadcastSettings { isMature } }`
 
 // TopStreams returns the top live streams across all categories, paginated to
 // limit.
 func (c *Client) TopStreams(ctx context.Context, limit int) ([]*Stream, error) {
 	var out []*Stream
 	err := paginate(limit, func(after string, first int) (int, string, bool, error) {
-		q := fmt.Sprintf(`{ streams(first: %d%s) { edges { cursor node { id title viewersCount createdAt language type game { name slug } broadcaster { login displayName } freeformTags { name } } } pageInfo { hasNextPage } } }`,
-			first, afterArg(after))
+		q := fmt.Sprintf(`{ streams(first: %d%s) { edges { cursor node { %s } } pageInfo { hasNextPage } } }`,
+			first, afterArg(after), streamFields)
 		var resp struct {
 			Streams streamEdges `json:"streams"`
 		}
@@ -89,8 +95,8 @@ func (c *Client) GameStreams(ctx context.Context, slug string, limit int) ([]*St
 	var out []*Stream
 	found := false
 	err := paginate(limit, func(after string, first int) (int, string, bool, error) {
-		q := fmt.Sprintf(`{ game(slug: %q) { streams(first: %d%s, sort: VIEWER_COUNT) { edges { cursor node { id title viewersCount createdAt language broadcaster { login displayName } } } pageInfo { hasNextPage } } } }`,
-			slug, first, afterArg(after))
+		q := fmt.Sprintf(`{ game(slug: %q) { streams(first: %d%s, sort: VIEWER_COUNT) { edges { cursor node { %s } } pageInfo { hasNextPage } } } }`,
+			slug, first, afterArg(after), streamFields)
 		var resp struct {
 			Game *struct {
 				Streams streamEdges `json:"streams"`
@@ -105,9 +111,7 @@ func (c *Client) GameStreams(ctx context.Context, slug string, limit int) ([]*St
 		found = true
 		next := ""
 		for _, e := range resp.Game.Streams.Edges {
-			s := e.Node.toStream()
-			s.Game = slug
-			out = append(out, s)
+			out = append(out, e.Node.toStream())
 			next = e.Cursor
 		}
 		return len(resp.Game.Streams.Edges), next, resp.Game.Streams.PageInfo.HasNextPage, nil

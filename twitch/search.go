@@ -11,7 +11,7 @@ import (
 
 // SearchChannels returns channels matching a query.
 func (c *Client) SearchChannels(ctx context.Context, query string, limit int) ([]*Channel, error) {
-	q := fmt.Sprintf(`{ searchFor(userQuery: %q, platform: "web") { channels { items { id login displayName followers { totalCount } } } } }`, query)
+	q := fmt.Sprintf(`{ searchFor(userQuery: %q, platform: "web") { channels { items { id login displayName followers { totalCount } roles { isPartner isAffiliate } } } } }`, query)
 	var resp struct {
 		SearchFor struct {
 			Channels struct {
@@ -22,6 +22,10 @@ func (c *Client) SearchChannels(ctx context.Context, query string, limit int) ([
 					Followers   *struct {
 						TotalCount int64 `json:"totalCount"`
 					} `json:"followers"`
+					Roles *struct {
+						IsPartner   bool `json:"isPartner"`
+						IsAffiliate bool `json:"isAffiliate"`
+					} `json:"roles"`
 				} `json:"items"`
 			} `json:"channels"`
 		} `json:"searchFor"`
@@ -39,6 +43,10 @@ func (c *Client) SearchChannels(ctx context.Context, query string, limit int) ([
 		}
 		if it.Followers != nil {
 			ch.Followers = it.Followers.TotalCount
+		}
+		if it.Roles != nil {
+			ch.Partner = it.Roles.IsPartner
+			ch.Affiliate = it.Roles.IsAffiliate
 		}
 		out = append(out, ch)
 		if limit > 0 && len(out) >= limit {

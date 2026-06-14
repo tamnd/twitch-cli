@@ -54,7 +54,8 @@ twitch channel show shroud --fields login,followers,live
 twitch channel videos shroud -n 5 -o jsonl | jq .title
 ```
 
-`-o` takes `auto`, `table`, `json`, `jsonl`, `csv`, `tsv`, `url`, or `raw`. Left
+`-o` takes `auto`, `table`, `markdown`, `json`, `jsonl`, `csv`, `tsv`, `url`, or
+`raw`. Left
 to `auto`, it prints a table to a terminal and JSONL into a pipe, so the same
 command reads well by hand and parses cleanly downstream. See
 [output formats](/reference/output/) for the full contract.

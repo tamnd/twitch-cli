@@ -48,7 +48,7 @@ func TestTopStreams(t *testing.T) {
 					"id": "42", "title": "ranked grind", "viewersCount": 1200,
 					"createdAt": "2026-06-01T00:00:00Z", "language": "en",
 					"game":        map[string]any{"name": "Dota 2", "slug": "dota-2"},
-					"broadcaster": map[string]any{"login": "arteezy", "displayName": "Arteezy"},
+					"broadcaster": map[string]any{"login": "arteezy", "displayName": "Arteezy", "broadcastSettings": map[string]any{"isMature": true}},
 				}},
 			},
 			"pageInfo": map[string]any{"hasNextPage": false},
@@ -64,7 +64,7 @@ func TestTopStreams(t *testing.T) {
 		t.Fatalf("want 1 stream, got %d", len(got))
 	}
 	s := got[0]
-	if s.Channel != "arteezy" || s.Viewers != 1200 || s.Game != "Dota 2" {
+	if s.Channel != "arteezy" || s.Viewers != 1200 || s.Game != "Dota 2" || !s.Mature {
 		t.Errorf("unexpected stream: %+v", s)
 	}
 	if s.URL != "https://www.twitch.tv/arteezy" {

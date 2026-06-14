@@ -1,8 +1,8 @@
 ---
 title: "twitch"
-description: "Crawl public Twitch streams, channels, games, videos, and clips into structured records"
+description: "Read public Twitch streams, channels, games, videos, and clips into structured records"
 heroTitle: "twitch, from the command line"
-heroLead: "Crawl public Twitch streams, channels, games, videos, and clips into structured records. One pure-Go binary, no API key, output that pipes into the rest of your tools, and a resource-URI driver other programs can address."
+heroLead: "Read public Twitch streams, channels, games, videos, and clips into structured records. One pure-Go binary, no API key, output that pipes into the rest of your tools, and a resource-URI driver other programs can address."
 heroPrimaryURL: "/getting-started/quick-start/"
 heroPrimaryText: "Get started"
 ---
@@ -22,7 +22,7 @@ There is no API key, nothing to sign up for, and nothing to run alongside it.
 Output adapts to where it goes: an aligned table on your terminal, JSONL the
 moment you pipe it somewhere.
 
-`twitch` is an independent tool and is not affiliated with Twitch Interactive.
+`twitch` is an independent tool and is not affiliated with Twitch.
 
 ## Two ways to use it
 
